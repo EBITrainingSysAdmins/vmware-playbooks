@@ -1,0 +1,135 @@
+- name: Vmware based course master image building playbook
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    cluster: HL-VDI
+    # HL-VDI Top-Chassis Bottom-Chassis
+    datastore: "flash-ds1"
+    # slower-bigger flash-ds1
+    vlanname: "HL Training External"
+    # "HL Training Internal" "HL Training External"
+
+# Cloning master VM from Gold VM #######################################################################
+    #mastervm: AquaFaangMay21
+    #course_build_yaml: AquaFaangMay21.yaml
+    goldvm: ubuntu18gold
+  #############################################
+  tasks:
+    - name: Make sure the gold VM is poweroff
+      community.vmware.vmware_guest_powerstate:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        name: "{{ goldvm }}"
+        state: powered-off
+        
+    - name: Clones the VMs
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        cluster: "{{ cluster }}"
+        template: "{{ goldvm }}"
+        folder: "{{ vmfolder }}"
+        name: "{{ mastervm }}"
+        state: poweredon
+        wait_for_ip_address: yes
+        #state: present
+        datastore: "{{ datastore }}"
+        networks:
+          - name: "{{ vlanname }}"
+            start_connected: yes
+            type: dhcp
+            domain: "{{ vmdomain }}"
+        #resource_pool: "{{ cluster }}"
+        customization:
+          domain : "{{ vmdomain }}"
+          hostname: "{{ mastervm }}"
+          timezone: "Europe/London"
+          dns_servers: "{{ vmdnsserver }}"
+      delegate_to: localhost
+
+    #- name: Wait for Master VM to be ready for 2 minutes
+    #  wait_for:
+    #    timeout: 120
+    #  delegate_to: localhost
+
+    - name: Make sure the master VM is powered on
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: no
+        datacenter: "{{ datacenter }}"
+        cluster: "{{ cluster }}"
+        folder: "{{ vmfolder }}"
+
+        name: "{{ mastervm }}"
+        state: poweredon
+      delegate_to: localhost
+      register: new_vm
+
+    - debug:
+        var: new_vm.instance.ipv4
+
+    - name: Add the master VMs to the playbook inventory
+      add_host:
+        name: "{{ mastervm }}"
+        instance_name: "{{ mastervm }}"
+        ansible_host: "{{ item }}"
+        groups: master_float
+      with_items:
+        - "{{ new_vm.instance.ipv4 }}"
+
+    - name: Remove any existant VM pool file from inventory
+      file:
+        path: "/ansible/ansible_playbooks/hosts.d/{{ mastervm }}-grp"
+        state: absent
+      ignore_errors: yes
+
+    - name: Fill in VM pool inventory file
+      blockinfile:
+        path: "/ansible/ansible_playbooks/hosts.d/{{ mastervm }}-grp"
+        create: yes
+        block: |
+          [{{ mastervm }}:vars]
+          remote_user=setup
+
+          [{{ mastervm }}]
+
+    - name: Fill in backup hosts file
+      lineinfile:
+        line: "{{ mastervm }}        ansible_host={{ item }}"
+        path: "/ansible/ansible_playbooks/hosts.d/{{ mastervm }}-grp"
+        insertafter: EOF
+      with_items:
+        - "{{ new_vm.instance.ipv4 }}"
+
+    - name: Wait for SSH service to start
+      wait_for:
+        host: "{{ item }}"
+        port: 22
+        state: started
+      with_items:
+        - "{{ new_vm.instance.ipv4 }}"
+      connection: local
+      
+##########################################################################
+##########################################################################
+- hosts: master_float
+  #master_float
+  name: Install the Software requirements on the Master VM
+  remote_user: setup
+  become: True
+  gather_facts: True
+  tasks:
+# Installing basic tools #######################################################################
+
+
+
+# Invoking course specific install ##############################################################
+
+    - include: "/ansible/Courses_Playbooks/{{ course_build_yaml }}"
